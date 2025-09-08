@@ -10,6 +10,25 @@ const sendMail = require('./tool/mailsend').sendMail;
 
 const app = express();
 
+
+const pino = require('pino');
+const fs = require('fs');
+const path = require('path');
+
+
+// ログファイルのパス
+const logDir = path.resolve(__dirname, 'logs');
+fs.mkdirSync(logDir, { recursive: true });
+const logFile = path.join(logDir, 'app.log');
+const logger = pino(
+  {
+    level: 'info', // 出力するログレベル
+    timestamp: pino.stdTimeFunctions.isoTime, // ISO8601形式
+  },
+  pino.destination({ dest: logFile, sync: false }) // ファイルに追記
+);
+
+
 const TARGET_URL = 'https://www.1101.com/';
 const YESTERDAY_URL = 'https://www.1101.com/darling_column/yesterday.html';
 
@@ -74,15 +93,15 @@ async function fetchDarlingText() {
   let text = await extractDarlingFrom(TARGET_URL);
   // 2. テキストが短い/空なら「昨日」ページをフォールバック
   if (!text || text.length < 120) {
-    console.warn('トップ抽出が弱い可能性 → yesterday にフォールバック');
+    logger.warn('トップ抽出が弱い可能性 → yesterday にフォールバック');
     text = await extractDarlingFrom(YESTERDAY_URL);
   }
   return text;
 }
 
 // 毎朝7:00（Asia/Tokyo）に実行
-cron.schedule('41 13 * * *', async () => {
-  console.log('ジョブ開始:', new Date().toISOString());
+cron.schedule('21 17 * * *', async () => {
+  logger.info('ジョブ開始:', new Date().toISOString());
   try {
     const text = await fetchDarlingText();
     if (text) {
@@ -91,7 +110,7 @@ cron.schedule('41 13 * * *', async () => {
       await sendMail('今日のダーリン取得失敗', '本文を取得できませんでした。');
     }
   } catch (err) {
-    console.error('ジョブ中エラー:', err);
+    logger.error('ジョブ中エラー:', err);
     try {
       await sendMail('今日のダーリン取得失敗', `エラー: ${err?.message || err}`);
     } catch {}
@@ -111,4 +130,4 @@ app.post('/run', async (_req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
+app.listen(PORT, () => logger.info(`Server listening on port ${PORT}`));
