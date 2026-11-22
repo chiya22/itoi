@@ -32,14 +32,7 @@ const sendMail = (title, content) => {
     subject: title,
     text: content,
   };
-  // メール送信
-  transporter.sendMail(message, (err, _res) => {
-      if (err) {
-        console.log(`[err: ${title}]${err}`);
-      } else {
-        console.log(`send mail to ${title}`);
-      }
-  });
+  return transporter.sendMail(message);
 };
 
 module.exports = {

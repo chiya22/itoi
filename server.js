@@ -7,6 +7,7 @@ const express = require('express');
 const cron = require('node-cron');
 const { chromium } = require('playwright');
 const sendMail = require('./tool/mailsend').sendMail;
+const { fetchMishimagaArticle } = require('./mishimaga');
 
 const app = express();
 
@@ -22,10 +23,13 @@ fs.mkdirSync(logDir, { recursive: true });
 const logFile = path.join(logDir, 'app.log');
 const logger = pino(
   {
-    level: 'info', // 出力するログレベル
-    timestamp: pino.stdTimeFunctions.isoTime, // ISO8601形式
+    level: 'info',
+    timestamp: pino.stdTimeFunctions.isoTime,
   },
-  pino.destination({ dest: logFile, sync: false }) // ファイルに追記
+  pino.multistream([
+    { stream: process.stdout },
+    { stream: pino.destination({ dest: logFile, sync: true, mkdir: true }) },
+  ])
 );
 
 
@@ -99,35 +103,116 @@ async function fetchDarlingText() {
   return text;
 }
 
-// 毎朝7:00（Asia/Tokyo）に実行
-cron.schedule('21 17 * * *', async () => {
-  logger.info('ジョブ開始:', new Date().toISOString());
+// 毎日7:00（Asia/Tokyo）に実行
+cron.schedule('0 7 * * *', async () => {
+  const formattedDate = formatDate(new Date());
+  logger.info({ job: 'darling', date: formattedDate }, 'ジョブ開始');
   try {
     const text = await fetchDarlingText();
-    if (text) {
-      await sendMail('今日のダーリン', text);
-    } else {
-      await sendMail('今日のダーリン取得失敗', '本文を取得できませんでした。');
-    }
+    const subject = text
+      ? `今日のダーリン ${formattedDate}`
+      : `今日のダーリン取得失敗 ${formattedDate}`;
+    await sendMail(subject, text || '本文を取得できませんでした。');
+    logger.info({ job: 'darling', subject, bytes: text?.length || 0 }, 'ジョブ完了');
   } catch (err) {
-    logger.error('ジョブ中エラー:', err);
+    logger.error({ job: 'darling', err }, 'ジョブ中エラー');
     try {
-      await sendMail('今日のダーリン取得失敗', `エラー: ${err?.message || err}`);
-    } catch {}
+      await sendMail(`今日のダーリン取得失敗 ${formattedDate}`, `エラー: ${err?.message || err}`);
+    } catch (mailErr) {
+      logger.error({ job: 'darling', err: mailErr }, '失敗通知メールの送信に失敗');
+    }
   }
 }, { timezone: 'Asia/Tokyo' });
+logger.info({ job: 'darling', cron: '21 17 * * *', timezone: 'Asia/Tokyo' }, '定期実行を登録');
+
+function formatDate(date) {
+  return `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function formatMishimagaMail(result) {
+  const header = [
+    result.episode ? `回数: ${result.episode}` : null,
+    result.title ? `タイトル: ${result.title}` : null,
+    result.date ? `更新日: ${result.date}` : null,
+    result.url ? `URL: ${result.url}` : null,
+  ].filter(Boolean).join('\n');
+  return `${header}\n\n${result.body || '本文を取得できませんでした。'}`;
+}
+
+// 毎朝7:05（Asia/Tokyo）にミシマガジン最新回を取得してメール送信
+cron.schedule('5 7 * * *', async () => {
+  const formattedDate = formatDate(new Date());
+  logger.info({ job: 'mishimaga', date: formattedDate }, 'ジョブ開始');
+  try {
+    const result = await fetchMishimagaArticle();
+    const subject = result.body
+      ? `ミシマガジン ${result.episode || ''} ${formattedDate}`.replace(/\s+/g, ' ').trim()
+      : `ミシマガジン取得失敗 ${formattedDate}`;
+    await sendMail(subject, formatMishimagaMail(result));
+    logger.info({
+      job: 'mishimaga',
+      subject,
+      episode: result.episode,
+      title: result.title,
+      bytes: result.body?.length || 0,
+    }, 'ジョブ完了');
+  } catch (err) {
+    logger.error({ job: 'mishimaga', err }, 'ジョブ中エラー');
+    try {
+      await sendMail(`ミシマガジン取得失敗 ${formattedDate}`, `エラー: ${err?.message || err}`);
+    } catch (mailErr) {
+      logger.error({ job: 'mishimaga', err: mailErr }, '失敗通知メールの送信に失敗');
+    }
+  }
+}, { timezone: 'Asia/Tokyo' });
+logger.info({ job: 'mishimaga', cron: '0 7 * * *', timezone: 'Asia/Tokyo' }, '定期実行を登録');
 
 // 手動実行用（UIなし）
 app.get('/healthz', (_req, res) => res.send('OK'));
-app.post('/run', async (_req, res) => {
-  try {
-    const text = await fetchDarlingText();
-    await sendMail('今日のダーリン（手動実行）', text || '本文を取得できませんでした。');
-    res.json({ ok: true, bytes: text?.length || 0 });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: String(e?.message || e) });
-  }
-});
+// app.post('/run', async (_req, res) => {
+//   const formattedDate = formatDate(new Date());
+//   const result = { ok: true, darling: null, mishimaga: null };
+//   logger.info({ job: 'manual', date: formattedDate }, '手動実行開始');
+
+//   try {
+//     const text = await fetchDarlingText();
+//     await sendMail(`今日のダーリン（手動実行） ${formattedDate}`, text || '本文を取得できませんでした。');
+//     result.darling = { ok: true, bytes: text?.length || 0 };
+//     logger.info({ job: 'manual', target: 'darling', bytes: text?.length || 0 }, '手動実行完了');
+//   } catch (e) {
+//     result.ok = false;
+//     result.darling = { ok: false, error: String(e?.message || e) };
+//     logger.error({ job: 'manual', target: 'darling', err: e }, '手動実行エラー');
+//   }
+
+//   try {
+//     const article = await fetchMishimagaArticle();
+//     const subject = `ミシマガジン（手動実行） ${article.episode || ''} ${formattedDate}`.replace(/\s+/g, ' ').trim();
+//     const body = formatMishimagaMail(article);
+//     await sendMail(article.body ? subject : `ミシマガジン取得失敗（手動実行） ${formattedDate}`, body);
+//     result.mishimaga = {
+//       ok: Boolean(article.body),
+//       episode: article.episode,
+//       title: article.title,
+//       date: article.date,
+//       url: article.url,
+//       bytes: article.body?.length || 0,
+//     };
+//     if (!article.body) result.ok = false;
+//     logger.info({
+//       job: 'manual',
+//       target: 'mishimaga',
+//       episode: article.episode,
+//       bytes: article.body?.length || 0,
+//     }, '手動実行完了');
+//   } catch (e) {
+//     result.ok = false;
+//     result.mishimaga = { ok: false, error: String(e?.message || e) };
+//     logger.error({ job: 'manual', target: 'mishimaga', err: e }, '手動実行エラー');
+//   }
+
+//   res.status(result.ok ? 200 : 500).json(result);
+// });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => logger.info(`Server listening on port ${PORT}`));
