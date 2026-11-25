@@ -5,14 +5,17 @@
 //   npm install playwright
 //   npx playwright install chromium
 //   node mishimaga.js
-// 定期実行は server.js の cron（毎朝7:00）から fetchMishimagaArticle() を呼ぶ。
+// 定期実行は server.js が毎朝7:05（日本時間）に fetchMishimagaArticle() を呼ぶ。
 
 const { chromium } = require('playwright');
 
 const TOP_URL = 'https://www.mishimaga.com/';
 
 async function fetchMishimagaArticle() {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'],
+  });
   try {
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     const page = await context.newPage();
